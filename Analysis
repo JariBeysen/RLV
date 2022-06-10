@@ -1,0 +1,2698 @@
+"""
+Created on Wed Feb 23 14:23:54 2022
+
+@author: jarim
+"""
+import os
+import random
+import time
+import warnings
+from datetime import timedelta
+from math import *
+import tensorflow as tf
+from tensorflow.keras import layers
+from tensorflow import keras
+import keras.backend as K
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import pearsonr, binned_statistic
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import train_test_split, KFold
+from scipy.interpolate import Rbf
+from scipy.integrate import odeint
+from scipy.linalg import block_diag
+import pickle
+from matplotlib.ticker import MaxNLocator
+import scipy.stats as st
+import winsound
+import tensorflow_addons as tfa
+import tensorflow_probability as tfp
+import tensorflow
+import tkinter
+import threading
+from tkinter import ttk
+
+
+script_dir = os.path.dirname(__file__)
+results_dir = os.path.join(script_dir, 'run_im/')
+plt.ion()
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+file1 = open("random_matrix.txt", 'rb')
+n_Matrices = pickle.load(file1)
+file2 = open("random_timeseries.txt", 'rb')
+n_Timeseries = pickle.load(file2)
+file3 = open("Random_tp.txt", 'rb')
+n_tp = pickle.load(file3)
+print(len(n_Timeseries), len(n_Timeseries[0]), len(n_Timeseries[0][0]))
+"________________________________________________________________________________________"
+
+# init
+
+single = False
+
+statistics = False
+
+
+sample_sizes = np.arange(10, 180, 20)
+thresholds = np.arange(-50, 51, 5)  # [-10,0,10]
+lambda_range = np.arange(0.01, 10, 0.01)
+
+threshold = 3
+n = 2
+part = 5
+Hypothesis_space_percentage = 100
+Check_amount = 100
+parent_inclusion = True
+
+Nspecies = len(n_Matrices[0])
+
+Hypothesis_space_size = np.sum(
+    [factorial(Nspecies-1)/factorial(Nspecies-1-i) for i in range(Nspecies)])
+
+
+"________________________________________________________________________________________"
+
+
+# LIMITS general
+
+def deterministic_step_function(x, matrix, dt, equil):
+
+    dxdt = np.multiply(x, np.dot(matrix, x-equil))
+    return dxdt*dt
+
+
+def L_V_diff(ab, Time, matrix, equil):
+
+    te = len(Time)+1
+    tb = 0
+    ode_step = 100
+    
+    
+    T_steps = list(np.random.uniform(0,te,te*ode_step))
+    
+    T = sorted(list(Time) + T_steps)
+
+    x = [ab]
+
+    for ind, t in enumerate(T[1:]):
+
+        dt = t-T[ind]
+
+        dx = deterministic_step_function(x[-1], matrix, dt, equil)
+
+        x.append(x[-1] + dx.tolist())
+
+    dp = Time
+
+    xf = [val for ind, val in enumerate(x) if T[ind] in dp]
+    tf = [val for ind, val in enumerate(T) if T[ind] in dp]
+
+    xf = np.array(xf)
+    return xf.reshape(len(Time), len(matrix))
+
+
+def L_V_exp(start_ab, Time, matrix, e):
+
+    t = np.arange(0, 101, 1/100.0)
+
+    x = [start_ab]
+    xf = [start_ab]
+    for i, val in enumerate(t[1:]):
+
+        x_next = []
+        dt = val-t[i]
+        x_next = np.multiply(x[-1], np.exp(dt*np.dot(matrix, x[-1]-e)))
+        x.append(np.array(x_next))
+
+        if val in Time:
+            xf.append(np.array(x_next))
+
+    xf = np.array(xf)
+
+    return xf.reshape(len(Time), len(matrix))
+
+
+def equilibria(X):
+
+    e = []
+    for i in X:
+        
+        e.append(np.mean(i))
+
+    return np.array(e)
+
+
+def logdiff(X, T):
+
+    new = []
+    X = X.tolist()
+
+    for i in X:
+
+        sub = []
+
+        for j, val in enumerate(i[1:]):
+            try:
+                sub.append(log(val / i[j]) / (T[j + 1] - T[j]))
+            except:
+                sub.append(val - i[j])
+        new.append(sub)
+
+    return np.array(new)
+
+
+def meandiff(X, q):
+
+    q = q.reshape(-1, 1)
+    Xm = np.repeat(q, len(X[0]), axis=1)
+    Y = X - Xm
+
+    return Y[:, :-1]
+
+
+def Partition(X, Y, n):
+
+    xp = np.vsplit(np.transpose(X), n)
+    yp = np.vsplit(np.transpose(Y), n)
+
+    part = []
+
+    for i, k in enumerate(xp):
+        part.append([np.transpose(k), np.transpose(yp[i])])
+
+    return part
+
+
+def Partition(X, Y, n):
+
+    X, Y = np.transpose(X), np.transpose(Y)
+
+    split = KFold(n, shuffle=True)
+
+    X_train, Y_train = [], []
+
+    for train, test in split.split(X, Y):
+
+        X_train.append(X[test])
+        Y_train.append(Y[test])
+
+    part = []
+
+    for i, k in enumerate(X_train):
+        part.append([np.transpose(k), np.transpose(Y_train[i])])
+
+    return part
+
+
+def array_index_generator(i, ar):
+
+    ar_set = []
+
+    if 1 not in ar:
+        sub = ar.tolist()
+        sub[i] = 1
+        ar_set.append(sub)
+
+        return np.array(ar_set)
+
+    if 0 not in ar:
+        sub = ar.tolist()
+        sub[i] = 1
+        ar_set.append(sub)
+
+        return np.array([])
+    try:
+        (zero_indeces,) = np.where(ar == 0)
+
+    except:
+        zero_indeces = np.where(ar == 0)[0]
+
+    for k in zero_indeces:
+        sub = ar.tolist()
+        sub[k] = 1
+        ar_set.append(sub)
+
+    return np.array(ar_set)
+
+
+def Interaction_array(X, Y):
+
+    skl = False
+
+    if skl:
+
+        X = np.transpose(X)
+        Y = np.transpose(Y)
+
+        model = LinearRegression()
+        fit = model.fit(X, Y)
+
+        param = fit.coef_
+
+    else:
+        #Y = np.transpose(Y)
+
+        param = np.dot(np.transpose(np.linalg.pinv(X)), Y)
+
+    return param
+
+
+def index_to_series(X, ind_ar):
+
+    ser = []
+
+    for ind, k in enumerate(ind_ar):
+
+        if k == 1:
+            ser.append(X[ind])
+
+        if k == 0:
+            ser.append(np.repeat(0, len(X[0])))
+
+    return np.array(ser)
+
+
+def Full_regress(X, y, indeces):
+
+    x = np.transpose(index_to_series(X, indeces))
+
+    xTx = np.dot(np.transpose(x), x)
+
+    xTx_ = np.linalg.pinv(xTx)
+
+    A = np.dot(np.dot(xTx_, np.transpose(x)), y)
+
+    er = y-np.dot(A, np.transpose(x))
+
+    sigma2 = np.abs(np.sum(np.square(y))/(len(x[0]-len(A))))
+
+    cov = sigma2*xTx_
+
+    return A, cov
+
+def Error_single_interaction(x, y, C):
+
+    y_est = np.dot(C, x)
+    Delta = y - y_est
+
+    return np.dot(Delta, Delta)
+
+
+def Error_full_interaction(x, y, C):
+
+    y_est = np.dot(C, x)
+    Delta = y - y_est
+
+    return np.dot(Delta.flatten(), Delta.flatten()) / len(x)
+
+"________________________________________________________________________________________"
+
+# stats functions
+
+
+def generate_dataset(j):
+
+    Timeseries, matrix = np.transpose(n_Timeseries[j]), n_Matrices[j]
+    Time = n_tp[j]
+    eq = equilibria(Timeseries)
+    md = meandiff(Timeseries, eq)
+    ld = logdiff(Timeseries, Time)
+
+    md, ld = np.transpose(md), np.transpose(ld)
+
+    [x, xt, y, yt] = train_test_split(md, ld, test_size=0.1, shuffle=True)
+    [x, xt, y, yt] = (
+        np.transpose(x),
+        np.transpose(xt),
+        np.transpose(y),
+        np.transpose(yt),
+    )
+
+    return np.transpose(md), np.transpose(ld), x, y, xt, yt, Timeseries, Time, matrix
+
+
+def dataset(n):
+
+    data = []
+
+    for j in range(n):
+        data.append(generate_dataset(j))
+
+    return data
+
+
+def classifier(X):
+
+    X = X.flatten()
+
+    ar = []
+
+    for k in X:
+
+        k = np.round(k, 1)
+
+        if k < 0:
+            ar.append(-1)
+        if k == 0:
+            ar.append(0)
+        if k > 0:
+            ar.append(1)
+
+    return ar
+
+
+def class_compare(X, Y):
+
+    summ = len(X)
+
+    discr_var = 0.0
+
+    offdiag_r = 0
+    offdiag_i = 0
+
+    for j, val in enumerate(X):
+
+        discr_var += (val - Y[j]) ** 2
+
+        if val != 0:
+            offdiag_r += 1
+        if Y[j] != 0:
+            offdiag_i += 1
+
+    return sqrt(discr_var) / summ, offdiag_r, offdiag_i
+
+
+def correctness(X, Y):
+
+    corr = 0
+
+    for ind, val in enumerate(X):
+
+        if val == Y[ind]:
+            corr += 1
+
+    return corr/len(X)
+
+
+
+def Matrix_error(M, A):
+
+    N = len(M)
+    err = 0
+
+    for j, r in enumerate(M):
+
+        for i, c in enumerate(r):
+            err += ((c - A[j][i])) ** 2
+
+    return err/N**2
+
+
+def series_error(t, series, im):
+
+    abund = series[:, 0]
+    equil = np.mean(series, axis=1)
+    infer_series = L_V_diff(abund, t, im, equil)
+
+    Delta = series-np.transpose(infer_series)
+
+    return np.dot(Delta.flatten(), Delta.flatten()) / len(im)
+
+
+def specificity_sensitivity(tm, im):
+
+    tm, im = classifier(tm), classifier(im)
+    ni_counter = 0.0
+
+    corrni_counter = 0.0
+
+    i_counter = 0.0
+
+    corri_counter = 0.0
+
+    for i, val in enumerate(tm):
+
+        if val == 0:
+            ni_counter += 1
+
+        if val == 0 and im[i] == 0:
+            corrni_counter += 1
+
+        if val != 0:
+            i_counter += 1
+
+        if val < 0 and im[i] < 0:
+            corri_counter += 1
+        if val > 0 and im[i] > 0:
+            corri_counter += 1
+
+    return corrni_counter / ni_counter, corri_counter / i_counter
+
+
+def t_test(A, sigmas, df):
+
+    z = A.flatten()/np.array(sigmas).flatten()
+
+    pval = [2*st.t.cdf(x=-np.abs(k), df=df)   for k in z]
+
+    return np.array(pval)
+
+
+
+
+def t_test_1D(A, sigmas, df):
+
+    z = A/sigmas
+
+    pval = 2*st.multivariate_t.pdf(x=np.abs(z), df=df)
+
+    # p = [x for ind,x in enumerate(pval) if 0<x<1 if ind%(len(A)+1)!=0 ]
+
+    return pval
+
+
+"________________________________________________________________________________________"
+
+
+# LIMITS GS
+
+
+def GS_queue(X, y, XT, yt, ars):
+
+    ers = []
+    inters = []
+
+    for k in ars:
+        x = index_to_series(X, k)
+
+        xt = index_to_series(XT, k)
+
+        interactions = Interaction_array(x, y)
+
+        inters.append(interactions)
+
+        error = [Error_single_interaction(xt, yt, interactions)]
+
+        ers.append(error)
+
+    ers = np.array(ers)
+
+    minind = np.where(ers == np.min(ers))[0][0]
+
+    return minind, inters[minind], ers[minind]
+
+
+def LIMITS_GS_array(index, X, Y, XT, YT, threshold):
+
+    y = Y[index]
+    yt = YT[index]
+
+    indeces = np.array([1 if k == index else 0 for k in range(len(X))])
+
+    x = index_to_series(X, indeces)
+
+    xt = index_to_series(XT, indeces)
+
+    interactions = Interaction_array(x, y)
+
+    error = [Error_single_interaction(xt, yt, interactions)]
+
+    while 0 in indeces:
+
+        trial_indeces = array_index_generator(index, indeces)
+
+        best_tr_ind, tr_interactions, minerr = GS_queue(
+            X, y, XT, yt, trial_indeces)
+
+        cond = 100 * (error[-1] - minerr) / error[-1]
+
+        if cond >= threshold:
+            indeces = np.array(trial_indeces[best_tr_ind])
+
+            interactions = np.round(tr_interactions, 5)
+
+            error.append(minerr)
+
+        if cond < threshold:
+            break
+
+    interactions, cov = Full_regress(X, y, indeces)
+
+    return interactions, cov
+
+
+def LIMITS_GS(X, Y, XT, YT, thresh):
+
+    species = np.arange(len(X))
+
+    interaction_list = []
+    cov_mats = []
+    varis = []
+
+    for j in species:
+        reg = LIMITS_GS_array(j, X, Y, XT, YT, thresh)
+        interaction_list.append(reg[0])
+        cov_mats.append(reg[1])
+        varis.append(np.diagonal(reg[1]))
+
+    interaction_list, cov_mats = np.reshape(interaction_list, (len(X), len(X))), np.reshape(
+        cov_mats, (len(cov_mats), len(cov_mats[0]), len(cov_mats[0][0])))
+
+    tt = t_test(interaction_list, varis, len(X[0])-Nspecies)
+
+    p = [x for ind, x in enumerate(tt.flatten()) if interaction_list.flatten()[
+        ind] != 0 if ind % (len(interaction_list)+1) != 0]
+
+    return interaction_list, np.mean(p), tt
+
+
+
+def bagged_median_LIMITS_GS(partition, XT, YT, thresh):
+
+    matrices, pvals = [], []
+
+    for p in partition:
+        reg, pvalm, pval = LIMITS_GS(p[0], p[1], XT, YT, thresh)
+
+        matrices.append(reg.tolist())
+        pvals.append(pval)
+
+    matrices = np.reshape(matrices, (len(partition), len(XT), len(XT)))
+
+    pvals = np.reshape(pvals, (len(partition), len(XT), len(XT)))
+    med_mat = []
+    med_pvals = []
+
+    for x in range(len(XT)):
+        subm = []
+        subp = []
+        for y in range(len(XT)):
+            k = np.median(matrices[:, x, y])
+
+            ind = np.where(k == matrices[:, x, y])[0][0]
+
+            subm.append(k)
+
+            subp.append(pvals[ind, x, y])
+
+        med_mat.append(subm)
+        med_pvals.append(subp)
+
+    med_mat = np.reshape(med_mat, (len(XT), len(XT)))
+    med_pvals = np.reshape(med_pvals, (len(XT), len(XT)))
+
+    p = [x for ind, x in enumerate(med_pvals.flatten()) if med_mat.flatten()[
+        ind] != 0 if ind % (len(med_mat)+1) != 0]
+
+    return med_mat, np.mean(p)
+
+
+"________________________________________________________________________________________"
+
+
+# reverse Dijkstra search
+
+
+def remove_dupes_Dijkstra(x, c):
+
+    z = []
+
+    if parent_inclusion == True:
+        c = np.array(c, dtype=object)[:, 0:2].tolist()
+
+        for i in x:
+
+            if i[0:2] not in c:
+
+                z.append(i)
+
+    else:
+        c = np.array(c, dtype=object)[:, 0].tolist()
+
+        for i in x:
+
+            if i[0] not in c:
+
+                z.append(i)
+
+    return z
+
+
+def reverse_Dijkstra_queue(q, v, c, X, y, XT, yt, index, threshold):
+
+    indeces = q[0]
+
+    c.append(indeces)
+
+    q = q[1:]
+
+    v.append(indeces)
+
+    trial_indeces = array_index_generator(index, np.array(indeces[0])).tolist()
+
+    trial_indeces = [[x, indeces[1]+[indeces[0]]] for x in trial_indeces]
+
+    trial_indeces = remove_dupes_Dijkstra(trial_indeces, c)
+
+    f_trial_indeces = []
+
+    for i in trial_indeces:
+
+        x = index_to_series(X, i[0])
+
+        xt = index_to_series(XT, i[0])
+
+        interactions = Interaction_array(x, y)
+
+        error = Error_single_interaction(xt, yt, interactions)
+
+        cond = 100 * (indeces[3]-error) / indeces[3]
+
+        if cond >= threshold:
+
+            f_trial_indeces.append(i + [indeces[2]+1/error, error])
+
+        if cond < threshold:
+            c.append([i, indeces[0], indeces[2]+1/error, error])
+
+    q = f_trial_indeces + q
+
+    if len(q) > Hypothesis_space_size:
+        print("length queue larger than hypothesis space")
+        return
+
+    q = sorted(q, key=lambda x: x[2], reverse=True)
+
+    v = sorted(v, key=lambda x: x[3], reverse=True)
+    return q, v, c
+
+
+def LIMITS_reverse_Dijkstra_array(index, X, Y, XT, YT, threshold):
+
+    y = Y[index]
+    yt = YT[index]
+
+    indeces = [1 if k == index else 0 for k in range(len(X))]
+
+    x = index_to_series(X, indeces)
+
+    xt = index_to_series(XT, indeces)
+
+    interactions = Interaction_array(x, y)
+
+    error = Error_single_interaction(xt, yt, interactions)
+
+    q = [[indeces, [list(np.repeat(0, Nspecies))], 1/error, error]]
+
+    c = []
+
+    v = []
+
+    while True:
+
+        A = reverse_Dijkstra_queue(q, v, c, X, y, XT, yt, index, threshold)
+
+        q = A[0]
+
+        v = A[1]
+
+        c = A[2]
+
+        if len(q) == 0 or len(c) >= Hypothesis_space_percentage*0.01*Hypothesis_space_size or len(c) >= Check_amount:
+            break
+
+    interactions, cov = Full_regress(X, y, v[-1][0])
+
+    return interactions, cov
+
+
+def LIMITS_reverse_Dijkstra(X, Y, XT, YT, thresh):
+
+    species = np.arange(len(X))
+
+    interaction_list = []
+    cov_mats = []
+    varis = []
+
+    for j in species:
+        reg = LIMITS_reverse_Dijkstra_array(j, X, Y, XT, YT, thresh)
+        interaction_list.append(reg[0])
+        cov_mats.append(reg[1])
+        varis.append(np.diagonal(reg[1]))
+
+    interaction_list, cov_mats = np.reshape(interaction_list, (len(X), len(X))), np.reshape(
+        cov_mats, (len(cov_mats), len(cov_mats[0]), len(cov_mats[0][0])))
+
+    tt = t_test(interaction_list, varis, len(X[0])-Nspecies)
+
+    p = [x for ind, x in enumerate(tt.flatten()) if interaction_list.flatten()[
+        ind] != 0 if ind % (len(interaction_list)+1) != 0]
+
+    return interaction_list, np.mean(p), tt
+
+
+def bagged_median_LIMITS_reverse_Dijkstra(partition, XT, YT, thresh):
+
+    matrices = []
+    pvals = []
+
+    for p in partition:
+        reg, pvalm, pval = LIMITS_reverse_Dijkstra(p[0], p[1], XT, YT, thresh)
+
+        matrices.append(reg.tolist())
+        pvals.append(pval)
+
+    matrices = np.reshape(matrices, (len(partition), len(XT), len(XT)))
+    pvals = np.reshape(pvals, (len(partition), len(XT), len(XT)))
+
+    med_mat = []
+    med_pvals = []
+
+    for x in range(len(XT)):
+        subm = []
+        subp = []
+        for y in range(len(XT)):
+            k = np.median(matrices[:, x, y])
+
+            ind = np.where(k == matrices[:, x, y])[0][0]
+
+            subm.append(k)
+
+            subp.append(pvals[ind, x, y])
+
+        med_mat.append(subm)
+        med_pvals.append(subp)
+
+    med_mat = np.reshape(med_mat, (len(XT), len(XT)))
+    med_pvals = np.reshape(med_pvals, (len(XT), len(XT)))
+
+    p = [x for ind, x in enumerate(med_pvals.flatten()) if med_mat.flatten()[
+        ind] != 0 if ind % (len(med_mat)+1) != 0]
+
+    return med_mat, np.mean(p)
+
+
+"________________________________________________________________________________________"
+
+# Tikhonov
+
+
+def Ridge_regr(x, y, lambd):
+
+    x, y = np.transpose(x), np.transpose(y)
+
+    mod = Ridge(lambd)
+
+    fit = mod.fit(x, y)
+
+    param = fit.coef_
+
+    return param
+
+
+def min_func(x, y, xt, yt, lambd):
+
+    im = Ridge_regr(x, y, lambd)
+
+    er = Error_full_interaction(xt, yt, im)
+
+    return er
+
+
+def min_Ridge(x, y, xt, yt, ls):
+
+    minimize_vals = []
+
+    X, Y = np.transpose(x), np.transpose(y)
+
+    split = KFold(int(len(x[0])/10), shuffle=True)
+
+    X_train, Y_train = [], []
+    X_test, Y_test = [], []
+
+    for train, test in split.split(X, Y):
+
+        X_train.append(np.transpose(X[train]))
+        Y_train.append(np.transpose(Y[train]))
+        X_test.append(np.transpose(X[test]))
+        Y_test.append(np.transpose(Y[test]))
+
+    lambds = []
+
+    for ind, _ in enumerate(X_train):
+
+        minimize_vals = []
+
+        for l in ls:
+            minimize_vals.append(
+                min_func(X_train[ind], Y_train[ind], X_test[ind], Y_test[ind], l))
+
+        min_lamb_ind = np.where(minimize_vals == min(minimize_vals))[0][0]
+        min_lamb = ls[min_lamb_ind]
+        min_er = min(minimize_vals)
+
+        lambds.append([min_lamb, min_er])
+
+    min_lamb = sorted(lambds, key=lambda x: x[1])[0][0]
+
+    im = Ridge_regr(x, y, min_lamb)
+
+    x = np.transpose(x)
+
+    y = np.transpose(y)
+
+    sig2 = np.dot(np.transpose((y-np.dot(x, im))), y -
+                  np.dot(x, im))/(x.shape[0]-im.shape[0])
+
+    varsub = np.linalg.pinv(
+        (np.dot(np.transpose(x), x) + min_lamb*np.identity(len(im))))
+    
+    
+
+    var = sig2*np.dot(varsub, np.dot(np.dot(np.transpose(x), x), varsub))
+    
+    svs =  np.linalg.svd(x)[1]
+    df = np.sum([x/(x+ min_lamb) for x in svs])
+
+    ttest = t_test(im, var, df)
+    p = [x for ind, x in enumerate(ttest.flatten()) if im.flatten()[
+        ind] != 0 if ind % (len(im)+1) != 0]
+
+    return im, np.mean(p)
+
+
+"________________________________________________________________________________________"
+
+# PINN
+
+
+class PINN_NeuralNet(tf.keras.Model):
+
+    def __init__(self, init_Matrix, lb, ub,
+                 output_dim=Nspecies,
+                 num_hidden_layers=3,
+                 num_neurons_per_layer=20,
+                 activation='relu',
+                 kernel_initializer='he_normal',
+                 bias=True,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.Matrix = tf.Variable(
+            init_Matrix, dtype=tf.float32, trainable=True, name="Matrix")
+        self.GR = tf.Variable(np.repeat(
+            0, Nspecies), dtype=tf.float32, trainable=True, name="GR", shape=(Nspecies,))
+        self.num_hidden_layers = num_hidden_layers
+        self.output_dim = output_dim
+        self.lb = lb
+        self.ub = ub
+
+        self.scale = tf.keras.layers.Lambda(
+            lambda x: 2.0*(x - lb)/(ub - lb) - 1.0)
+        self.hidden = [tf.keras.layers.Dense(num_neurons_per_layer,
+                                             activation=activation  ,
+                                             kernel_initializer=kernel_initializer, use_bias=bias)
+                       for _ in range(self.num_hidden_layers)]
+
+        self.out = tf.keras.layers.Dense(output_dim)
+        
+    
+    def call(self, X):
+        Z = self.scale(X)
+        for i in range(self.num_hidden_layers):
+            Z = self.hidden[i](Z)
+            Z = tf.keras.layers.Dropout(.05)(Z)
+        out = self.out(Z)
+        return out
+
+    def return_matrix(self):
+
+        return self.Matrix
+
+
+class PINNSolver():
+    def __init__(self, model, data, ode_ts_loss=True, penalty=False):
+        self.model = model
+        self.t = data[0]
+        self.t_end = self.t[-1].numpy()
+        self.t_step = len(self.t[1].numpy()-self.t[0].numpy())
+        self.ode_step = 100
+        # self.t_ode = tf.constant(np.arange(0,self.t_end,self.ode_step),dtype="float32",shape=(int(self.t_end/self.ode_step),1))
+        self.x = data[1]
+        self.hist = []
+        self.iter = 0
+        dif = self.t[1:]-self.t[:-1]
+        # self.t[-1]/self.t.shape[0]#tf.constant(1,dtype="float32")
+        self.dt = tf.concat((dif, tf.reshape(dif[-1], shape=(1, 1))), axis=0)
+        self.Noise = tf.Variable(0.02, dtype="float32")
+        self.bool_ode_ts = ode_ts_loss
+        self.penalty_Matrix = penalty
+
+    def get_r(self):
+        "define actual gradient of a vector, Google needs to hire some actual mathematicians to name their functions"
+
+        x = self.model(self.t)
+        vec_len = x.shape[1]
+        derivs = []
+
+        for i in range(vec_len):
+            with tf.GradientTape(persistent=True) as tape:
+
+                tape.watch(self.t)
+
+                x = self.model(self.t)[:, i]
+
+            grad = tape.gradient(x, self.t)
+            derivs.append(grad)
+
+            del tape
+
+        dx_dt = tf.reshape(tf.stack(derivs, axis=1),
+                           (self.t_step*len(self.t), Nspecies))
+
+        return self.fun_r(self.x, dx_dt)
+
+    def loss_fn(self, t, x):
+
+        x_pred = tf.clip_by_value(self.model(t), -1e10, 1e10)
+
+        mse_loss = tf.reduce_sum(tf.reduce_mean(tf.square(x-x_pred), axis=0))
+
+        r = tf.clip_by_value(self.get_r(), -1e10, 1e10)
+
+        ode_ts, NN_ts, _ = self.ts_r()
+
+        ode_ts, NN_ts = tf.clip_by_value(
+            ode_ts, -1e10, 1e10), tf.clip_by_value(NN_ts, -1e10, 1e10)
+
+        phys_loss = tf.reduce_sum(tf.reduce_mean(tf.square(r), axis=0))
+
+        if self.bool_ode_ts:
+
+            ts_loss = tf.reduce_sum(tf.reduce_mean(
+                tf.square(ode_ts-NN_ts), axis=0))
+
+            phys_loss += ts_loss
+
+        #bound_loss = tf.reduce_sum(tf.square(x[0]-x_pred[0]))
+
+        loss = mse_loss + phys_loss #+ bound_loss
+
+        if not type(self.penalty_Matrix) == bool:
+
+            loss += 0.001 * \
+                tf.reduce_mean(
+                    tf.square(self.model.Matrix - self.penalty_Matrix))
+
+        return loss, mse_loss, phys_loss
+
+    def get_grad(self, t, x):
+
+        with tf.GradientTape(persistent=True) as tape:
+
+            tape.watch(self.model.trainable_variables)
+            loss, mse, phys = self.loss_fn(t, x)
+
+        g = tape.gradient(loss, self.model.trainable_variables)
+        del tape
+
+        return loss, mse, phys, g
+
+    def fun_r(self, x, dx_dt):
+
+        mx = K.dot(self.model.Matrix, tf.transpose(x))
+        xmx = tf.math.multiply(x, tf.transpose(mx)-self.model.GR)
+        return dx_dt - xmx
+
+    @tf.function
+    def numeric_x(self, t, x):
+
+        Matrix = self.model.Matrix
+
+        x_n = [tf.reshape(x[0], shape=(1, x.shape[1]))]
+
+        for j in range(t.shape[0]-1):
+
+            dt = t[j+1] - t[j]
+
+            xl = tf.reshape(x_n[-1], shape=(1, x.shape[1]))
+
+            mx = K.dot(Matrix, tf.transpose(xl))
+
+            xmx = tf.math.multiply(xl, tf.transpose(
+                mx)-tf.reduce_mean(x, axis=0)) + tf.multiply(tf.random.normal(xl.shape, 0, self.Noise), xl)*tf.sqrt(dt)
+
+            dxdt_lv = xmx
+
+            x_n.append(tf.clip_by_value(xl+dxdt_lv*dt, -1e20, 1e20))
+
+        x_n = tf.stack(x_n, axis=0)
+
+        return tf.reshape(x_n, shape=x.shape)
+
+    @tf.function
+    def exp_x(self, t, x):
+
+        Matrix = self.model.Matrix
+
+        x_n = [tf.reshape(x[0], shape=(1, x.shape[1]))]
+
+        for j in range(t.shape[0]-1):
+
+            dt = t[j+1] - t[j]
+
+            xl = tf.reshape(x_n[-1], shape=(1, x.shape[1]))
+
+            mx = K.dot(Matrix, tf.transpose(xl-tf.reduce_mean(x, axis=0)))
+
+            xn = tf.multiply(tf.math.exp(tf.random.normal(xl.shape, 0, self.Noise)), tf.multiply(
+                xl, tf.exp(dt*tf.transpose(mx))))  # tf.multiply(xl,tf.exp(dt*tf.transpose(mx)))
+
+            x_n.append(tf.clip_by_value(xn, -1e20, 1e20))
+
+        x_n = tf.stack(x_n, axis=0)
+
+        return tf.reshape(x_n, shape=(t.shape[0], x.shape[1]))
+
+    def ode_time(self):
+
+        # t = sorted(list(np.random.uniform(0,self.t_end,self.ode_step)))
+
+        t_e = np.random.uniform(0, self.t_end)
+
+        t = np.arange(t_e, t_e+5, 1)
+
+        t_tf = tf.constant(t, shape=(len(t), 1), dtype='float32')
+
+        return t_tf
+
+    def ts_r(self):
+
+        t = self.ode_time()
+
+        NN_guess = self.model(t)
+
+        sol = self.exp_x(t, NN_guess)
+
+        return sol, NN_guess, t
+
+    def return_noise(self):
+
+        return self.Noise
+
+    def train(self, optimizer, lr, t, x, N=100):
+        optimizer.learning_rate.assign(lr)
+
+        @tf.function
+        def train_step():
+            loss, mse, phys, grad = self.get_grad(t, x)
+
+            variables = self.model.trainable_variables
+
+            optimizer.apply_gradients(zip(grad, variables))
+
+            return loss, mse, phys
+
+        def callback(mse, phys, i):
+
+            if self.bool_ode_ts:
+                ts = self.model(self.t).numpy()
+                ts_guess, _, t_guess = self.ts_r()
+                Matrix = self.model.Matrix
+                fig, ax = plt.subplots(1, 4, figsize=(40, 10))
+                vmin = -np.absolute(Matrix).max()
+                vmax = np.absolute(Matrix).max()
+                ax[3].matshow(Matrix, cmap='seismic', vmin=vmin, vmax=vmax)
+
+                for t in np.transpose(ts):
+                    ax[1].plot(self.t, t)
+
+                ax[1].set_title("NN aprox series | " +
+                                'ser/phys ='+str(mse)+','+str(phys))
+                ax[3].set_title("NN aprox matrix ")
+                ax[3].axis('off')
+
+                for t in np.transpose(ts_guess):
+                    ax[2].plot(t_guess, t)
+
+                ax[2].set_title(
+                    "matrix aprox series | noise = "+str(self.Noise.numpy()))
+
+                for t in np.transpose(self.x):
+                    ax[0].plot(self.t, t)
+
+                ax[0].set_title("real series")
+
+                fig.savefig(results_dir+"PINN_"+str(self.iter))
+
+                plt.close(fig)
+
+            else:
+                ts = self.model(self.t).numpy()
+                Matrix = self.model.Matrix
+                fig, ax = plt.subplots(1, 3, figsize=(30, 10))
+                vmin = -np.absolute(Matrix).max()
+                vmax = np.absolute(Matrix).max()
+                ax[2].matshow(Matrix, cmap='seismic', vmin=vmin, vmax=vmax)
+
+                for t in np.transpose(ts):
+                    ax[1].plot(self.t, t)
+
+                ax[1].set_title("NN aprox series | " +
+                                'ser/phys ='+str(mse)+','+str(phys))
+                ax[2].set_title("NN aprox matrix")
+                ax[2].axis('off')
+
+                for t in np.transpose(self.x):
+                    ax[0].plot(self.t, t)
+
+                ax[0].set_title("real series")
+
+                fig.savefig(results_dir+"PINN_"+str(self.iter))
+
+                plt.close(fig)
+
+        def lr_red(i, N):
+            optimizer.learning_rate.assign(lr*(1-i/N*.9))
+       
+
+        for i in range(N):
+            lr_red(i, N)
+            loss, mse, phys = train_step()
+
+            if len(tf.where(tf.math.is_nan([loss,mse,phys])==tf.repeat(True, 3)))>0 and i>=100:
+                print([loss.numpy(),mse.numpy(),phys.numpy()])
+                print("nan at iteration "+str(i))
+                break
+
+            if i%1000 ==0:
+                callback(mse.numpy(),phys.numpy(),i)
+                print("Epoch/loss/Timeserie loss/phys loss =")
+                tf.print(i,loss, mse, phys)
+                print("_______________________________")
+
+            self.iter += 1
+
+        return self.model(self.t)
+
+
+def Physics_Informed_Neural_Network(Time, Timeseries, ode_ts_lossf=True):
+
+    eq = equilibria(Timeseries)
+    md = meandiff(Timeseries, eq)
+    ld = logdiff(Timeseries, Time)
+
+    init_Matrix = LIMITS_GS(md, ld, md, ld, 1000)[0]
+
+    penalty_Matrix = tf.constant(
+        init_Matrix, dtype="float32", shape=init_Matrix.shape)
+
+    init_Matrix = np.diag(np.repeat(0, Nspecies))
+
+    lb = tf.constant([np.min(Time), np.min(Timeseries)], dtype="float32")
+    
+    ub = tf.constant([np.max(Time), np.max(Timeseries)], dtype="float32")
+
+    Time_tf = tf.constant(Time, dtype='float32', shape=(len(Time), 1))
+
+    Timeseries_tf = tf.constant(np.transpose(
+        Timeseries), dtype="float32", shape=(len(Time), Nspecies))
+
+    model = PINN_NeuralNet(init_Matrix, lb, ub, num_hidden_layers=5, num_neurons_per_layer=20,
+                           activation="sigmoid", kernel_initializer="glorot_normal")
+
+    optimizer = tf.keras.optimizers.Adam()
+
+    lr = 2e-4
+
+    PINN = PINNSolver(model, [Time_tf, Timeseries_tf],
+                      ode_ts_loss=ode_ts_lossf )
+
+    NN_serie = np.transpose(PINN.train(
+        optimizer, lr, Time_tf, Timeseries_tf, N=20000).numpy())
+
+    mat = model.return_matrix().numpy()
+
+    return mat
+
+
+"________________________________________________________________________________________"
+
+# single run
+
+
+def single_plot():
+    global matrix
+    stats_dataset = dataset(len(n_Timeseries))
+    ns = ["True", "GS", "GS_bag", "rDijkstra",
+          "rDijkstra_bag", "Ridge", "PINN"]
+
+    md, ld, x, y, xt, yt, Timeseries, Time, matrix = stats_dataset[int(
+        np.random.uniform(0, len(n_Timeseries)-1))]
+    part = Partition(x, y, 3)
+    LINREG_matrix = np.dot(ld, np.linalg.pinv(md))
+    LIMITS_GS_matrix = LIMITS_GS(x, y, xt, yt, threshold)[0]
+    LIMITS_Dijkstra_matrix = LIMITS_reverse_Dijkstra(
+        x, y, xt, yt, threshold)[0]
+    LIMITS_GS_bag_matrix = bagged_median_LIMITS_GS(part, xt, yt, threshold)[0]
+    LIMITS_Dijkstra_bag_matrix = bagged_median_LIMITS_reverse_Dijkstra(
+        part, xt, yt, threshold)[0]
+    RIDGE_matrix = min_Ridge(x, y, xt, yt, lambda_range)[0]
+    PINN_matrix = Physics_Informed_Neural_Network(Time, Timeseries)
+    rms = [LIMITS_GS_matrix, LIMITS_GS_bag_matrix, LIMITS_Dijkstra_matrix,
+           LIMITS_Dijkstra_bag_matrix, RIDGE_matrix, PINN_matrix]
+    all_m = [matrix]+rms
+    fig = plt.figure()
+    n_plots = len(all_m)
+    for s in Timeseries:
+        plt.plot(Time, s)
+    plt.title("Timeseries")
+    plt.xlabel("Time")
+    plt.ylabel("Abundance")
+    plt.show()
+    fig, axs = plt.subplots(3, n_plots - 1, figsize=(9, n_plots * 3), dpi=1000)
+
+    [axs1, axs2, axs3] = np.transpose(axs)
+
+    for ind, m in enumerate(axs1):
+        print(ind)
+        x = all_m[0].flatten()
+        y = rms[ind].flatten()
+        m.plot(x, y, ".k")
+        m.plot(np.arange(-1, 1, 0.1), np.arange(-1, 1, 0.1), "gray")
+        m.set_xlabel("real coefficient")
+        m.set_ylabel("inferred coefficient")
+        m.set_title(ns[ind + 1])
+        m.set_ylim((-1.1, 1.1))
+        m.set_xlim((-1.1, 1.1))
+    plt.show()
+    fig, axs = plt.subplots(1, n_plots, figsize=((1 + n_plots) * 5, 5))
+    vmin = -np.absolute(matrix).max()
+    vmax = np.absolute(matrix).max()
+
+    for ind, a in enumerate(axs2):
+
+        a.matshow(all_m[ind], cmap="seismic", vmin=vmin, vmax=vmax)
+        a.set_title(ns[ind])
+        a.axis("off")
+    plt.show()
+    fig, axs = plt.subplots(1, n_plots, figsize=((1 + n_plots) * 5, 5))
+    c0 = np.reshape(classifier(matrix), (len(matrix), len(matrix)))
+    vmin = -np.absolute(c0).max()
+    vmax = np.absolute(c0).max()
+
+    for ind, a in enumerate(axs3):
+        c = np.reshape(classifier(all_m[ind]), (len(matrix), len(matrix)))
+        a.matshow(
+            c,
+            cmap="magma",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        a.set_title(ns[ind])
+        a.axis("off")
+    plt.show()
+
+
+def single_plot():
+    global matrix
+    stats_dataset = dataset(len(n_Timeseries))
+    ns = ["True", "GS", "GS_bag", "rDijkstra",
+          "rDijkstra_bag", "Ridge", "PINN"]
+
+    md, ld, x, y, xt, yt, Timeseries, Time, matrix = stats_dataset[int(
+        np.random.uniform(0, len(n_Timeseries)-1))]
+    part = Partition(x, y, 3)
+    LINREG_matrix = np.dot(ld, np.linalg.pinv(md))
+    LIMITS_GS_matrix = LIMITS_GS(x, y, xt, yt, threshold)[0]
+    LIMITS_Dijkstra_matrix = LIMITS_reverse_Dijkstra(
+        x, y, xt, yt, threshold)[0]
+    LIMITS_GS_bag_matrix = bagged_median_LIMITS_GS(part, xt, yt, threshold)[0]
+    LIMITS_Dijkstra_bag_matrix = bagged_median_LIMITS_reverse_Dijkstra(
+        part, xt, yt, threshold)[0]
+    RIDGE_matrix = min_Ridge(x, y, xt, yt, lambda_range)[0]
+    PINN_matrix = Physics_Informed_Neural_Network(Time, Timeseries)
+    print(np.mean(LINREG_matrix-PINN_matrix))
+    rms = [LIMITS_GS_matrix, LIMITS_GS_bag_matrix, LIMITS_Dijkstra_matrix,
+           LIMITS_Dijkstra_bag_matrix, RIDGE_matrix, PINN_matrix]
+    all_m = [matrix]+rms
+    fig = plt.figure(figsize=(10, 5), dpi=1000)
+    n_plots = len(all_m)
+    for s in Timeseries:
+        plt.plot(Time, s)
+    plt.title("Timeseries")
+    plt.xlabel("Time")
+    plt.ylabel("Abundance")
+    plt.show()
+    fig, axs = plt.subplots(n_plots, 3, figsize=(15, n_plots * 5))
+
+    for ind, m in enumerate(axs):
+        print(ind)
+        x = all_m[0].flatten()
+        y = all_m[ind].flatten()
+
+        a = m[0]
+        a.plot(x, y, ".k")
+        a.plot(np.arange(-1, 1, 0.1), np.arange(-1, 1, 0.1), "gray")
+        a.set_xlabel("real coefficient")
+        a.set_ylabel("inferred coefficient")
+        a.set_title(ns[ind])
+        a.set_ylim((-1.1, 1.1))
+        a.set_xlim((-1.1, 1.1))
+        vmin = -np.absolute(matrix).max()
+        vmax = np.absolute(matrix).max()
+        b = m[1]
+        b.matshow(all_m[ind], cmap="seismic", vmin=vmin, vmax=vmax)
+        b.set_title(ns[ind])
+        b.axis("off")
+
+        c = m[2]
+        d0 = np.reshape(classifier(matrix), (len(matrix), len(matrix)))
+        vmin = -np.absolute(d0).max()
+        vmax = np.absolute(d0).max()
+        d = np.reshape(classifier(all_m[ind]), (len(matrix), len(matrix)))
+        c.matshow(
+            d,
+            cmap="magma",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        c.set_title(ns[ind])
+        c.axis("off")
+
+    plt.show()
+
+
+"________________________________________________________________________________________"
+
+# BP stat tests
+
+# general
+
+
+def regression_method(name, x, y, t, ts, threshold=[1.14, 1.45,-10.35,-1.39]):
+
+    if name == "GS":
+        im = LIMITS_GS(x, y, x, y, threshold[0])[0]
+    if name == "rDijkstra":
+        im = LIMITS_reverse_Dijkstra(x, y, x, y, threshold[1])[0]
+    if name == "GS_bag":
+        partitions = Partition(x, y, 3)
+        im = bagged_median_LIMITS_GS(partitions, x, y,  threshold[2])[0]
+    if name == "rDijkstra_bag":
+        partitions = Partition(x, y, 3)
+        im = bagged_median_LIMITS_reverse_Dijkstra(
+            partitions, x, y,  threshold[3])[0]
+    if name == "Ridge":
+        im = min_Ridge(x, y, x, y, lambda_range)[0]
+    if name == "PINN":
+        im = Physics_Informed_Neural_Network(t, ts)
+
+    return im
+
+
+def err_Ndata(nameslist, data, N):
+
+    mers = []
+    mstds = []
+    sers = []
+    sstds = []
+    divs = []
+
+    it = 0
+
+    for name in nameslist:
+        namem = []
+        namemstd = []
+        names = []
+        namesstd = []
+        named = []
+
+        for n in N:
+
+            subm = []
+            subs = []
+            subdiv = 0
+
+            for k in data:
+
+                print(it)
+
+                it += 1
+
+                md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+                dp = sorted(random.sample(list(Time), n))
+
+                xf = [val for ind, val in enumerate(
+                    np.transpose(Timeseries)) if Time[ind] in dp]
+
+                tf = [val for ind, val in enumerate(Time) if Time[ind] in dp]
+
+                xf = np.array(np.transpose(xf)).reshape(
+                    (Timeseries.shape[0], len(tf)))
+
+                tf = np.array(tf)
+
+                eq = equilibria(xf)
+                md = meandiff(xf, eq)
+                ld = logdiff(xf, tf)
+
+                im = regression_method(name, md, ld, tf, xf)
+
+                me = Matrix_error(im, matrix)
+
+                se = series_error(tf, xf, im)
+
+                if not np.isnan(me).any():
+                    subm.append(me)
+                if not np.isnan(se).any():
+                    subs.append(se)
+
+                if np.isnan(me).any():
+                    subdiv += 1.0
+                if np.isnan(se).any():
+                    subdiv += 1.0
+
+            namem.append(np.mean(subm))
+            namemstd.append(np.std(subm))
+            names.append(np.mean(subs))
+            namesstd.append(np.std(subs))
+            named.append([subdiv/len(data)])
+
+        mers.append(namem)
+        mstds.append(namemstd)
+        sers.append(names)
+        sstds.append(namesstd)
+        divs.append(named)
+
+    fig, axs = plt.subplots(3, len(nameslist), figsize=(
+        len(nameslist)*5, 15), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+
+        a = axs[0, ind]
+        a.errorbar(N, mers[ind], yerr=mstds[ind], fmt='k-')
+        a.set_title("Matrix error "+str(n))
+        a.set_ylim((0, 2*np.max(mers[ind])))
+
+    for ind, n in enumerate(nameslist):
+        a = axs[1, ind]
+        a.errorbar(N, sers[ind], yerr=sstds[ind], fmt='k-')
+        a.set_title("Series error "+str(n))
+        a.set_ylim((0, 2*np.max(sers[ind])))
+
+    for ind, n in enumerate(nameslist):
+        a = axs[2, ind]
+        a.plot(N, divs[ind], 'k-')
+        a.set_title("divergence rate "+str(n))
+
+    plt.show()
+    return mers, mstds, sers, sstds, divs
+
+
+def spec_sens_stat(nameslist, data):
+
+    spec = []
+
+    specstd = []
+
+    sens = []
+
+    sensstd = []
+
+    it = 0
+
+    for name in nameslist:
+
+        subsp = []
+
+        subse = []
+
+        for k in data:
+
+            print(it)
+
+            it += 1
+
+            md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+            im = regression_method(name, md, ld, Time, Timeseries)
+
+            ss = specificity_sensitivity(matrix, im)
+
+            subsp.append([ss[0]])
+
+            subse.append([ss[1]])
+
+        spec.append(np.mean(subsp))
+
+        specstd.append(np.std(subsp))
+
+        sens.append(np.mean(subse))
+
+        sensstd.append(np.std(subse))
+
+    return nameslist, spec, specstd, sens, sensstd
+
+
+def error_stat(dataset, names):
+
+    meanms, stdms, meanss, stdss, divs, meanps, stdps = [], [], [], [], [], [], []
+
+    for q_type in names:
+
+        datam = []
+        datas = []
+        datap = []
+        div_count = 0
+
+        for ind, k in enumerate(dataset):
+            print("iter " + str(ind))
+
+            md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+            if q_type == "GS":
+                im = LIMITS_GS(x, y, xt, yt, 1.19)
+            if q_type == "rDijkstra":
+                im = LIMITS_reverse_Dijkstra(x, y, xt, yt, 1.47)
+            if q_type == "GS_bag":
+                partitions = Partition(x, y, 3)
+                im = bagged_median_LIMITS_GS(partitions, x, y,  -10.35)
+            if q_type == "rDijkstra_bag":
+                partitions = Partition(x, y, 3)
+                im = bagged_median_LIMITS_reverse_Dijkstra(
+                    partitions, x, y,  -1.39)
+            if q_type == "Ridge":
+                im = min_Ridge(x, y, xt, yt, lambda_range)
+            if q_type == "PINN":
+                im = Physics_Informed_Neural_Network(Time, Timeseries)
+
+            if q_type == 'GS' or q_type == 'rDijkstra' or q_type == 'Ridge' or q_type == "GS_bag" or q_type == "rDijkstra_bag":
+
+                datap.append(im[1])
+
+                erm = Matrix_error(im[0], matrix)
+
+                ers = series_error(Time, Timeseries, im[0])
+            if q_type == 'PINN':
+
+                erm = Matrix_error(im, matrix)
+
+                ers = series_error(Time, Timeseries, im)
+
+            datam.append(erm)
+
+            if not np.isnan(ers).any():
+                datas.append(ers)
+            else:
+                print("series diverges")
+                div_count += 1.0
+
+        meanm = np.mean(datam)
+        stdm = np.std(datam)
+        means = np.mean(datas)
+        stds = np.std(datas)
+
+        if q_type == 'GS' or q_type == 'rDijkstra' or q_type == 'Ridge' or q_type == "GS_bag" or q_type == "rDijkstra_bag":
+            meanp = np.mean(datap)
+            stdp = np.std(datap)
+
+            meanms.append(meanm)
+            stdms.append(stdm)
+            meanss.append(means)
+            stdss.append(stds)
+            meanps.append(meanp)
+            stdps.append(stdp)
+            divs.append(div_count/len(dataset))
+
+        if q_type == 'PINN':
+
+            meanms.append(meanm)
+            stdms.append(stdm)
+            meanss.append(means)
+            stdss.append(stds)
+            divs.append(div_count/len(dataset))
+
+    return meanms, stdms, meanss, stdss, divs, meanps, stdps
+
+
+def err_notrans(nameslist,data):
+    
+    mesm_name = []
+    
+    sesm_name = []
+    
+    messtd_name = []
+    
+    sesstd_name = []
+   
+    for name in nameslist:
+        
+        mes = []
+        
+        ses = []
+        it = 0
+        for k in data:
+            
+            print(it)
+            it+=1
+        
+            md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+            
+            xf = Timeseries
+            tf = Time
+            
+            eq = equilibria(Timeseries)
+            
+            ind = 0
+            while np.max(np.abs(eq-np.mean(Timeseries[:,-3:-1],axis=1)))>0.03:
+                ind+=1
+                
+                xf = Timeseries[:,ind:]
+                tf = Time[ind:]
+                
+                eq = equilibria(xf)
+                md = meandiff(xf, eq)
+                ld = logdiff(xf, tf)
+                
+            if len(tf)>30: 
+                im = regression_method(name, md, ld, tf, xf)
+    
+                me = Matrix_error(im, matrix)
+    
+                se = series_error(tf, xf, im)
+                
+                mes.append(me)
+                
+                ses.append(se)
+            
+        mesm_name.append(np.mean(mes))
+        messtd_name.append(np.std(mes))
+        sesm_name.append(np.mean(ses))
+        sesstd_name.append(np.std(ses))
+        
+    return mesm_name,messtd_name,sesm_name,sesstd_name
+
+# LIMITS
+
+def spec_sens_Ndata(nameslist, data, N):
+
+    specm_name = []
+    specstd_name = []
+    sensm_name = []
+    sensstd_name = []
+
+    it = 0
+
+    for name in nameslist:
+        specm = []
+        specstd = []
+        sensm = []
+        sensstd = []
+
+        for n in N:
+
+            subspec = []
+            subsens = []
+
+            for k in data:
+
+                print(it)
+
+                it += 1
+
+                md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+                dp = sorted(random.sample(list(Time), n))
+
+                xf = [val for ind, val in enumerate(
+                    np.transpose(Timeseries)) if Time[ind] in dp]
+
+                tf = [val for ind, val in enumerate(Time) if Time[ind] in dp]
+
+                xf = np.array(np.transpose(xf)).reshape(
+                    (Timeseries.shape[0], len(tf)))
+
+                tf = np.array(tf)
+
+                eq = equilibria(xf)
+                md = meandiff(xf, eq)
+                ld = logdiff(xf, tf)
+
+                im = regression_method(name, md, ld, tf, xf)
+
+                spec, sens = specificity_sensitivity(matrix, im)
+
+                subspec.append(spec)
+
+                subsens.append(sens)
+
+            specm.append(np.mean(subspec))
+            specstd.append(np.std(subspec))
+            sensm.append(np.mean(subsens))
+            sensstd.append(np.std(subsens))
+
+        specm_name.append(specm)
+        specstd_name.append(specstd)
+        sensm_name.append(sensm)
+        sensstd_name.append(sensstd)
+
+    stats = [[specm_name, specstd_name], [sensm_name, sensstd_name]]
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+
+        a = axs[0]
+        a.errorbar(N, stats[0][0][ind], yerr=stats[0][1][ind], label=n)
+        a.set_title("specificity ")
+        a.set_xlabel('N datapoints')
+        a.set_ylim((0, 1))
+        a.legend()
+        a.set_ylim((0, 1))
+    for ind, n in enumerate(nameslist):
+
+        a = axs[1]
+        a.errorbar(N, stats[1][0][ind], yerr=stats[1][1][ind], label=n)
+        a.set_title("sensitivity ")
+        a.set_xlabel('N datapoints')
+        a.legend()
+        a.set_ylim((0, 1))
+
+    plt.show()
+    return specm_name, specstd_name, sensm_name, sensstd_name
+
+
+def spec_sens_er(nameslist, data):
+
+    specm_name = []
+    sensm_name = []
+    mer_name = []
+    ser_name = []
+
+    it = 0
+
+    for name in nameslist:
+        specm = []
+
+        sensm = []
+
+        mer = []
+        ser = []
+
+        for k in data:
+
+            print(it)
+
+            it += 1
+
+            md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+            im = regression_method(name, md, ld, Time, Timeseries)
+
+            spec, sens = specificity_sensitivity(matrix, im)
+
+            erm = Matrix_error(im, matrix)
+
+            ers = series_error(Time, Timeseries, im)
+
+            if not np.isnan(erm) and not np.isnan(ers):
+                specm.append(spec)
+                sensm.append(sens)
+                mer.append(erm)
+                ser.append(ers)
+
+        specm_name.append(specm)
+        sensm_name.append(sensm)
+        mer_name.append(mer)
+        ser_name.append(ser)
+
+    stats = [mer_name, ser_name, specm_name, sensm_name]
+
+    fig, axs = plt.subplots(2, 2, figsize=(20, 10), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+        x = stats[0][ind]
+        y = stats[2][ind]
+
+        s, edges, _ = binned_statistic(
+            x, y, statistic='mean', bins=np.logspace(-3, 3, 6))
+
+        sstd, _, _ = binned_statistic(
+            x, y, statistic='std', bins=np.logspace(-3, 3, 6))
+
+        a = axs[0, 0]
+        a.errorbar(edges[:-1], s, yerr=sstd, label=n)
+        a.set_title("specificity ")
+        a.set_xlabel('matrix error')
+        a.set_xscale('log')
+        a.legend()
+
+    for ind, n in enumerate(nameslist):
+
+        x = stats[0][ind]
+        y = stats[3][ind]
+
+        s, edges, _ = binned_statistic(
+            x, y, statistic='mean', bins=np.logspace(-3, 3, 6))
+        sstd, _, _ = binned_statistic(
+            x, y, statistic='std', bins=np.logspace(-3, 3, 6))
+
+        a = axs[0, 1]
+        a.errorbar(edges[:-1], s, yerr=sstd, label=n)
+        a.set_title("sensitivity ")
+        a.set_xlabel('matrix error')
+        a.set_xscale('log')
+        a.legend()
+
+    for ind, n in enumerate(nameslist):
+        x = stats[1][ind]
+        y = stats[2][ind]
+
+        s, edges, _ = binned_statistic(
+            x, y, statistic='mean', bins=np.logspace(-3, 3, 6))
+        sstd, _, _ = binned_statistic(
+            x, y, statistic='std', bins=np.logspace(-3, 3, 6))
+
+        a = axs[1, 0]
+        a.errorbar(edges[:-1], s, yerr=sstd, label=n)
+        a.set_title("specificity ")
+        a.set_xlabel('series error')
+        a.set_xscale('log')
+        a.legend()
+
+    for ind, n in enumerate(nameslist):
+
+        x = stats[1][ind]
+        y = stats[3][ind]
+
+        s, edges, _ = binned_statistic(
+            x, y, statistic='mean', bins=np.logspace(-3, 3, 6))
+        sstd, _, _ = binned_statistic(
+            x, y, statistic='std', bins=np.logspace(-3, 3, 6))
+
+        a = axs[1, 1]
+        a.errorbar(edges[:-1], s, yerr=sstd, label=n)
+        a.set_title("sensitivity ")
+        a.set_xlabel('series error')
+        a.set_xscale('log')
+        a.legend()
+
+    plt.show()
+    return specm_name, sensm_name, mer_name, ser_name
+
+
+def thresh_min(X, Y1, Y2):
+
+    ip1 = Rbf(X, Y1)
+    ip2 = Rbf(X, Y2)
+
+    x_range = np.arange(min(X), max(X), 0.01)
+
+    Delta = np.absolute(ip1(x_range)-ip2(x_range))
+
+    index = np.where(Delta == min(Delta))[0][0]
+
+    return x_range[index], (ip1(x_range[index])+ip2(x_range[index]))/2
+
+
+def spec_sens_thresh(nameslist, data, threshs):
+
+    specm_name = []
+    specstd_name = []
+    sensm_name = []
+    sensstd_name = []
+
+    it = 0
+
+    for name in nameslist:
+        specm = []
+        specstd = []
+        sensm = []
+        sensstd = []
+
+        for n in threshs:
+
+            subspec = []
+            subsens = []
+
+            for k in data:
+
+                print(it)
+
+                it += 1
+
+                md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+                im = regression_method(name, md, ld, Time, Timeseries,  [n, n,n,n])
+
+                spec, sens = specificity_sensitivity(matrix, im)
+
+                subspec.append(spec)
+
+                subsens.append(sens)
+
+            specm.append(np.mean(subspec))
+            specstd.append(np.std(subspec))
+            sensm.append(np.mean(subsens))
+            sensstd.append(np.std(subsens))
+
+        specm_name.append(specm)
+        specstd_name.append(specstd)
+        sensm_name.append(sensm)
+        sensstd_name.append(sensstd)
+
+    stats = [[specm_name, specstd_name], [sensm_name, sensstd_name]]
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+
+        a = axs[0]
+        a.errorbar(threshs, stats[0][0][ind], yerr=stats[0][1][ind], label=n)
+        a.set_title("specificity ")
+        a.set_xlabel('Threshold')
+        a.set_ylim((0, 1))
+        a.legend()
+        a.set_ylim((0, 1))
+    for ind, n in enumerate(nameslist):
+
+        a = axs[1]
+        a.errorbar(threshs, stats[1][0][ind], yerr=stats[1][1][ind], label=n)
+        a.set_title("sensitivity ")
+        a.set_xlabel('Threshold')
+        a.legend()
+        a.set_ylim((0, 1))
+
+    best_threshs = []
+    for ind, n in enumerate(nameslist):
+
+        val = thresh_min(threshs, stats[0][0][ind], stats[1][0][ind])
+        best_threshs.append(val)
+
+    plt.show()
+    return best_threshs
+
+
+def er_thresh(nameslist, data, threshs):
+
+    erm_name = []
+    stdm_name = []
+    ers_name = []
+    stds_name = []
+
+    it = 0
+
+    for name in nameslist:
+        erm = []
+        stdm = []
+        ers = []
+        stds = []
+
+        for n in threshs:
+
+            subm = []
+            subs = []
+
+            for k in data:
+
+                print(it)
+
+                it += 1
+
+                md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+                im = regression_method(name, md, ld, Time, Timeseries, [n, n,n,n])
+
+                m = Matrix_error(im, matrix)
+
+                s = series_error(Time, Timeseries, im)
+
+                if not np.isnan(m):
+                    subm.append(m)
+                if not np.isnan(s):
+                    subs.append(s)
+
+            erm.append(np.median(subm))
+            stdm.append(np.std(subm))
+            ers.append(np.median(subs))
+            stds.append(np.std(subs))
+
+        erm_name.append(erm)
+        stdm_name.append(stdm)
+        ers_name.append(ers)
+        stds_name.append(stds)
+
+    stats = [[erm_name, stdm_name], [ers_name, stds_name]]
+
+    fig, axs = plt.subplots(1, 1, figsize=(10, 5), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+
+        a = axs[0]
+        a.errorbar(threshs, stats[0][0][ind], yerr=np.array(stats[0][1][ind])/10, label=n)
+        a.set_ylabel("matrix error ")
+        a.set_xlabel('Threshold')
+        a.set_ylim((0, 3*np.median(stats[0][0])))
+        a.legend()
+
+
+    plt.show()
+
+
+def p_thresh(nameslist, data, threshs):
+
+    pm_name = []
+    pstd_name = []
+
+    it = 0
+
+    for name in nameslist:
+        pm = []
+        pstd = []
+
+        for n in threshs:
+
+            subp = []
+
+            for k in data:
+
+                print(it)
+
+                it += 1
+
+                md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+                if name == "GS":
+                    im = LIMITS_GS(x, y, x, y, n)[1]
+                if name == "rDijkstra":
+                    im = LIMITS_reverse_Dijkstra(x, y, x, y, n)[1]
+                if name == "GS_bag":
+                    partitions = Partition(x, y, 3)
+                    im = bagged_median_LIMITS_GS(partitions, x, y, n)[1]
+                if name == "rDijkstra_bag":
+                    partitions = Partition(x, y, 3)
+                    im = bagged_median_LIMITS_reverse_Dijkstra(
+                        partitions, x, y,  n)[1]
+
+
+                if not np.isnan(im):
+                    subp.append(im)
+
+            pm.append(np.mean(subp))
+            pstd.append(np.std(subp))
+
+        pm_name.append(pm)
+        pstd_name.append(pstd)
+
+    stats = [pm_name, pstd_name]
+
+    fig, a = plt.subplots(1, 1, figsize=(5, 5), dpi=1000)
+
+    for ind, n in enumerate(nameslist):
+
+        a.errorbar(threshs, stats[0][ind], yerr=stats[1][ind], label=n)
+        a.set_title("P-value ")
+        a.set_xlabel('Threshold')
+        a.legend()
+
+    plt.show()
+
+# PINN
+
+
+def PINN_version_er(data):
+
+    me = []
+    mstd = []
+    se = []
+    sstd = []
+
+    subm = []
+    subs = []
+    for k in data:
+
+        md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+        im = Physics_Informed_Neural_Network(Time, Timeseries, True)
+
+        m = Matrix_error(im, matrix)
+
+        s = series_error(Time, Timeseries, im)
+
+        if not np.isnan(m):
+            subm.append(m)
+        if not np.isnan(s):
+            subs.append(s)
+
+    me.append(np.mean(subm))
+    mstd.append(np.std(subm))
+    se.append(np.mean(subs))
+    sstd.append(np.std(subs))
+
+    subm = []
+    subs = []
+    for k in data:
+
+        md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+
+        im = Physics_Informed_Neural_Network(Time, Timeseries, False)
+
+        m = Matrix_error(im, matrix)
+
+        s = series_error(Time, Timeseries, im)
+
+        if not np.isnan(m):
+            subm.append(m)
+        if not np.isnan(s):
+            subs.append(s)
+
+    me.append(np.mean(subm))
+    mstd.append(np.std(subm))
+    se.append(np.mean(subs))
+    sstd.append(np.std(subs))
+
+    return me, mstd, se, sstd
+
+def diag_test(data):
+    
+    ps = []
+    
+    for k in data:
+        
+        md, ld, x, y, xt, yt, Timeseries, Time, matrix = k
+        
+        interaction_list,_,tt = LIMITS_GS(md, ld, md, ld, 100000000000000)
+
+        
+        p = [x  for ind, x in enumerate(tt.flatten()) if x>=0 and x<=1 ]
+                
+        pm = np.mean(p)
+        
+        ps.append(pm)
+        
+    return np.mean(ps),np.std(ps)
+        
+        
+"________________________________________________________________________________________"
+
+# GUI
+
+
+class Stat_GUI():
+
+    def __init__(self, stat_funcs, stat_names, params, param_data):
+        super(Stat_GUI, self).__init__()
+
+        self.funcs = stat_funcs
+        self.names = stat_names
+        self.params = params
+        self.param_data = param_data
+        self.rows = len(stat_funcs)
+        self.buttons = []
+        self.boxes = []
+        self.vars = []
+
+    def create_gui(self):
+        self.root = tkinter.Tk()
+        self.mainframe = ttk.Frame(self.root, padding="50 50 50 50",
+                                   width=100, height=30 * (len(self.names)+len(self.param_data)))
+        self.mainframe.grid(column=1, row=0, )
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        self.root.title('Statistical functions')
+
+        self.root.configure(background='grey')
+        self.create_buttons()
+
+        self.root.mainloop()
+
+    def create_buttons(self):
+
+        for ind, val in enumerate(self.param_data):
+
+            self.boxes.append(self.box(self.params[ind], val, ind))
+
+        for ind, val in enumerate(self.names):
+
+            self.buttons.append(self.button(self.funcs[ind], val, ind))
+
+    def run_stat(self, x):
+
+        process = threading.Thread(target=x)
+        process.start()
+
+    def button(self, x, name, ind):
+        tkinter.Button(self.mainframe, text=name,
+                       command=lambda: self.run_stat(x)).pack()
+
+    def box(self, x, data, ind):
+        self.vars.append(tkinter.IntVar())
+        self.vars[ind].set(30)
+
+        ttk.Spinbox(self.mainframe, from_=data[0], to=data[1], textvariable=self.vars[ind], command=lambda: x(
+            int(self.vars[ind].get()))).pack()
+
+
+"________________________________________________________________________________________"
+
+# run
+if single:
+    single_plot()
+
+
+nameslist_gen = ["GS", "GS_bag", "rDijkstra", "rDijkstra_bag", "Ridge"]
+
+nameslist_lim = ["GS", "rDijkstra", "GS_bag", "rDijkstra_bag"]
+
+
+# general
+
+
+def ds(n):
+    global datas
+    datas = dataset(n)
+
+
+def single_run():
+    start_time = time.monotonic()
+
+    single_plot()
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def ern():
+    start_time = time.monotonic()
+
+    print(err_Ndata(nameslist_gen, datas, [50, 100]))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+    
+    
+def ernt():
+    start_time = time.monotonic()
+
+    print(err_notrans(nameslist_gen, datas))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def sss():
+    start_time = time.monotonic()
+
+    print(spec_sens_stat(nameslist_gen, datas))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def ers():
+    start_time = time.monotonic()
+
+    print(error_stat(datas, nameslist_gen))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def sst():
+    start_time = time.monotonic()
+
+    print(spec_sens_thresh(nameslist_lim, datas, np.arange(-20, 21, 2)))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def ssn():
+    start_time = time.monotonic()
+
+    print(spec_sens_Ndata(nameslist_lim, datas, np.arange(40, 101, 10)))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def sse():
+    start_time = time.monotonic()
+
+    print(spec_sens_er(nameslist_lim, datas))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def ert():
+    start_time = time.monotonic()
+
+    print(er_thresh(nameslist_lim, datas, np.arange(-20, 21, 2)))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def pt():
+    start_time = time.monotonic()
+
+    print(p_thresh(nameslist_lim, datas, np.arange(-20, 21, 2)))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+    
+def ptd():
+    start_time = time.monotonic()
+
+    print(diag_test(datas))
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+def PINN_lfstat():
+    start_time = time.monotonic()
+
+    print(PINN_version_er(datas))
+
+    winsound.Beep(1000, 100)
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+
+
+funcs = [single_run, ern,ernt, sss, ers, sst, ssn, sse, ert, pt,ptd, PINN_lfstat]
+func_names = ["single run", "error / N data","error non transient", "stats specificity sensitivity", "stats error", "speci-sensi / threshold",
+              "speci-sensi / N data ", "speci-sensi/ error", "error / threshold", "p-value / threshold","diag p-value", "PINN compare loss function strategy"]
+params = [ds]
+params_data = [[0, len(n_Timeseries), "dataset size"]]
+gui = Stat_GUI(funcs, func_names, params, params_data).create_gui()
+
+
+"________________________________________________________________________________________"
+
+#extra
+
+#batch size integration (worse results)
+
+class PINN_NeuralNet(tf.keras.Model):
+
+    def __init__(self, init_Matrix, lb, ub,
+                 output_dim=Nspecies,
+                 num_hidden_layers=3,
+                 num_neurons_per_layer=20,
+                 activation='relu',
+                 kernel_initializer='he_normal',
+                 bias=True,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.Matrix = tf.Variable(
+            init_Matrix, dtype=tf.float32, trainable=True, name="Matrix")
+        self.GR = tf.Variable(np.repeat(
+            0, Nspecies), dtype=tf.float32, trainable=True, name="GR", shape=(Nspecies,))
+        self.num_hidden_layers = num_hidden_layers
+        self.output_dim = output_dim
+        self.lb = lb
+        self.ub = ub
+
+        self.scale = tf.keras.layers.Lambda(
+            lambda x: 2.0*(x - lb)/(ub - lb) - 1.0)
+        self.hidden = [tf.keras.layers.Dense(num_neurons_per_layer,
+                                             activation=tf.keras.activations.get(
+                                                 activation),
+                                             kernel_initializer=kernel_initializer, use_bias=bias)
+                       for _ in range(self.num_hidden_layers)]
+
+        self.out = tf.keras.layers.Dense(output_dim)
+
+    def call(self, X):
+        Z = self.scale(X)
+        for i in range(self.num_hidden_layers):
+            Z = self.hidden[i](Z)
+            Z = tf.keras.layers.Dropout(.05)(Z)
+        out = self.out(Z)
+        return out
+
+    def return_matrix(self):
+
+        return self.Matrix
+
+
+class PINNSolver():
+    def __init__(self, model, data, ode_ts_loss=True):
+        self.model = model
+        self.t_d = data[0]
+        self.ode_step = 100
+        self.x_d = data[1]
+        self.Noise = tf.Variable(0.02, dtype="float32")
+        self.bool_ode_ts = ode_ts_loss
+        self.iter = 0
+        
+    @tf.function
+    def get_r(self):
+        "define actual gradient of a vector, Google needs to hire some actual mathematicians to name their functions"
+
+        x = self.model(self.t)
+        vec_len = x.shape[1]
+        derivs = []
+
+        for i in range(vec_len):
+            with tf.GradientTape(persistent=True) as tape:
+
+                tape.watch(self.t)
+
+                x = self.model(self.t)[:, i]
+
+            grad = tape.gradient(x, self.t)
+            derivs.append(grad)
+
+            del tape
+
+        dx_dt = tf.reshape(tf.stack(derivs, axis=1),
+                           (self.t_step*len(self.t), Nspecies))
+
+        return self.fun_r(self.x, dx_dt)
+    @tf.function
+    def loss_fn(self, t, x):
+
+        x_pred = tf.clip_by_value(self.model(t), -1e10, 1e10)
+
+        mse_loss = tf.reduce_sum(tf.reduce_mean(tf.square(x-x_pred), axis=0))
+
+        r = tf.clip_by_value(self.get_r(), -1e10, 1e10)
+
+        ode_ts, NN_ts, _ = self.ts_r()
+
+        ode_ts, NN_ts = tf.clip_by_value(
+            ode_ts, -1e10, 1e10), tf.clip_by_value(NN_ts, -1e10, 1e10)
+
+        phys_loss = tf.reduce_sum(tf.reduce_mean(tf.square(r), axis=0))
+
+        if self.bool_ode_ts:
+
+            ts_loss = tf.reduce_sum(tf.reduce_mean(
+                tf.square(ode_ts-NN_ts), axis=0))
+
+            phys_loss += ts_loss/10
+
+
+        loss = mse_loss + phys_loss 
+
+
+        return loss, mse_loss, phys_loss
+    @tf.function
+    def get_grad(self, t, x):
+
+        with tf.GradientTape(persistent=True) as tape:
+
+            tape.watch(self.model.trainable_variables)
+            loss, mse, phys = self.loss_fn(t, x)
+
+        g = tape.gradient(loss, self.model.trainable_variables)
+        del tape
+
+        return loss, mse, phys, g
+    @tf.function
+    def fun_r(self, x, dx_dt):
+
+        mx = K.dot(self.model.Matrix, tf.transpose(x-self.model.GR))
+        xmx = tf.math.multiply(x, tf.transpose(mx))
+        return dx_dt - xmx
+
+
+    @tf.function
+    def exp_x(self, t, x):
+
+        Matrix = self.model.Matrix
+
+        x_n = [tf.reshape(x[0], shape=(1, x.shape[1]))]
+
+        for j in range(t.shape[0]-1):
+
+            dt = t[j+1] - t[j]
+
+            xl = tf.reshape(x_n[-1], shape=(1, x.shape[1]))
+
+            mx = K.dot(Matrix, tf.transpose(xl-tf.reduce_mean(self.x, axis=0)))
+
+            xn = tf.multiply(tf.math.exp(tf.random.normal(xl.shape, 0, self.Noise)), tf.multiply(
+                xl, tf.exp(dt*tf.transpose(mx))))  # tf.multiply(xl,tf.exp(dt*tf.transpose(mx)))
+
+            x_n.append(tf.clip_by_value(xn, -1e20, 1e20))
+
+        x_n = tf.stack(x_n, axis=0)
+
+        return tf.reshape(x_n, shape=(t.shape[0], x.shape[1]))
+    
+    
+    def ode_time(self):
+
+
+        t_e = np.random.uniform(0, self.t_end-5)
+
+        t = np.arange(t_e, t_e+5, .1)
+
+        t_tf = tf.constant(t, shape=(len(t), 1), dtype='float32')
+
+        return t_tf
+    
+    def ts_r(self):
+
+        t = self.ode_time()
+
+        NN_guess = self.model(t)
+
+        sol = self.exp_x(t, NN_guess)
+
+        return sol, NN_guess, t
+
+
+    def train(self, optimizer, lr, T, X, N=100,batchsize=50):
+        optimizer.learning_rate.assign(lr)
+        self.t_end = self.t_d[-1].numpy()
+        self.t_step = len(self.t_d[1].numpy()-self.t_d[0].numpy())
+        self.X = X
+        self.T = T
+        def train_step():
+            
+            rand_seed = np.random.randint(0,10000)
+            
+            X = self.X.shuffle(buffer_size=1,seed=rand_seed).batch(batchsize)
+            T = self.T.shuffle(buffer_size=1,seed=rand_seed).batch(batchsize)
+
+            for x,t in zip(X,T):
+                self.t = t
+                self.x = x
+               
+                self.ode_step = 100
+                dif = self.t[1:]-self.t[:-1]
+                self.dt = tf.concat((dif, tf.reshape(dif[-1], shape=(1, 1))), axis=0)
+                
+                loss, mse, phys, grad = self.get_grad(t, x)
+    
+                variables = self.model.trainable_variables
+    
+                optimizer.apply_gradients(zip(grad, variables))
+
+            return loss, mse, phys
+
+        def callback(mse, phys, i):
+
+            if self.bool_ode_ts:
+                ts = self.model(self.t_d).numpy()
+                ts_guess, _, t_guess = self.ts_r()
+                Matrix = self.model.Matrix
+                fig, ax = plt.subplots(1, 4, figsize=(40, 10))
+                vmin = -np.absolute(Matrix).max()
+                vmax = np.absolute(Matrix).max()
+                ax[3].matshow(Matrix, cmap='seismic', vmin=vmin, vmax=vmax)
+
+                for t in np.transpose(ts):
+                    ax[1].plot(self.t_d, t)
+
+                ax[1].set_title("NN aprox series | " +
+                                'ser/phys ='+str(mse)+','+str(phys))
+                ax[3].set_title("NN aprox matrix ")
+                ax[3].axis('off')
+
+                for t in np.transpose(ts_guess):
+                    ax[2].plot(t_guess, t)
+
+                ax[2].set_title(
+                    "matrix aprox series | noise = "+str(self.Noise.numpy()))
+
+                for t in np.transpose(self.x_d):
+                    ax[0].plot(self.t_d, t)
+
+                ax[0].set_title("real series")
+
+                fig.savefig(results_dir+"PINN_"+str(self.iter))
+
+                plt.close(fig)
+                
+        def lr_red(i, N):
+            optimizer.learning_rate.assign(lr*(1-i/N*.9))
+
+        for i in range(N):
+            
+            lr_red(i, N)
+            loss, mse, phys = train_step()
+
+            if len(tf.where(tf.math.is_nan([loss,mse,phys])==tf.repeat(True, 3)))>0 and i>=100:
+                print([loss.numpy(),mse.numpy(),phys.numpy()])
+                print("nan at iteration "+str(i))
+                break
+
+            if i%100 ==0:
+                callback(mse.numpy(),phys.numpy(),i)
+                print("Epoch/loss/Timeserie loss/L_V loss/ ts guess loss =")
+                tf.print(i,loss, mse, phys)
+                print("_______________________________")
+
+            self.iter+=1
+            
+            
+def Physics_Informed_Neural_Network(Time, Timeseries, ode_ts_lossf=True):
+
+    eq = equilibria(Timeseries)
+    md = meandiff(Timeseries, eq)
+    ld = logdiff(Timeseries, Time)
+
+    init_Matrix = LIMITS_GS(md, ld, md, ld, 1000)[0]
+
+    penalty_Matrix = tf.constant(
+        init_Matrix, dtype="float32", shape=init_Matrix.shape)
+
+    init_Matrix = np.diag(np.repeat(0, Nspecies))
+
+    lb = tf.constant([np.min(Time), np.min(Timeseries)], dtype="float32")
+
+    ub = tf.constant([np.max(Time), np.max(Timeseries)], dtype="float32")
+
+    Time_tf = tf.constant(Time, dtype='float32', shape=(len(Time), 1))
+    
+    Time_tf_set = tf.data.Dataset.from_tensor_slices(Time_tf)
+
+    Timeseries_tf = tf.constant(np.transpose(Timeseries), dtype="float32", shape=(len(Time), Nspecies))
+    
+    Timeseries_tf_set = tf.data.Dataset.from_tensor_slices(Timeseries_tf)
+
+    model = PINN_NeuralNet(init_Matrix, lb, ub, num_hidden_layers=3, num_neurons_per_layer=20,
+                           activation="sigmoid", kernel_initializer="glorot_normal")
+
+    optimizer = tf.keras.optimizers.Adam()
+
+    lr = 2e-4
+
+    PINN = PINNSolver(model, [Time_tf, Timeseries_tf],
+                      ode_ts_loss=ode_ts_lossf)
+
+    PINN.train(optimizer, lr, Time_tf_set, Timeseries_tf_set, N=5000,batchsize=5)
+
+    mat = model.return_matrix().numpy()
+
+    return mat
+
+
