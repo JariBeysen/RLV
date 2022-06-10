@@ -1,0 +1,280 @@
+
+
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Mar 15 11:45:23 2022
+
+@author: jarim
+"""
+import random
+import time
+import warnings
+from datetime import timedelta
+from math import *
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import pearsonr
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import train_test_split
+from scipy.interpolate import Rbf
+from scipy.integrate import odeint
+
+TSlist = []
+matrices = []
+tplist = []
+noise_linear =0.01
+n =100
+Nspecies=10
+off_diag =int(np.random.uniform(0,(Nspecies-1)**2))
+t_end = 100.0
+step = 1
+n_points = 100
+s_a = np.random.uniform(0,1,Nspecies)
+s_a*=1/np.linalg.norm(s_a)
+eq = np.repeat(0,Nspecies)
+eq_std = np.repeat(0.1,Nspecies)
+
+rand_points = True
+norm = False
+
+def stochastic_step_function(x,noise_linear,dt):
+
+    return   x*np.random.normal(0,noise_linear,x.shape)*sqrt(dt)
+
+
+def deterministic_step_function(x,matrix,dt,equil):
+    
+    dxdt = np.multiply(x,np.dot(matrix,x-equil))
+
+    return dxdt*dt
+
+
+    
+def L_V(ab,Time,matrix,equil):
+        
+    te = Time[-1]+1
+    tb = Time[0]
+    ode_step = 10000
+    T = np.arange(tb,te,1.0/ode_step)
+        
+        
+    x = [ab]
+        
+    for ind,t in enumerate(T[1:]):
+            
+        dt = t-T[ind]
+                
+        dx = deterministic_step_function(x[-1], matrix, dt,equil) + stochastic_step_function(x[-1], noise_linear,dt)
+                
+        x.append(x[-1] +dx.tolist())
+     
+    if rand_points:
+        
+        dp = sorted(random.sample(list(T),n_points))
+        
+    else:
+        dp = np.arange(0,t_end+1,t_end/n_points)
+    
+    xf = [val for ind,val in enumerate(x) if T[ind] in dp]
+    tf = [val for ind,val in enumerate(T) if T[ind] in dp]  
+    
+    if norm:
+        xf = [x/sum(x) for x in xf]
+    
+    
+    return xf,tf
+
+
+
+# def L_V(start_ab,Time,matrix,e):
+    
+#     t = np.arange(0,t_end,1)
+
+#     x = [start_ab]
+#     xf = [start_ab]
+#     for i,val in enumerate(t[1:]):
+        
+#         x_next = []
+#         dt = val-t[i]
+#         x_next = deterministic_step_function(x[-1], matrix, dt) + stochastic_step_function(x[-1], noise_linear)
+#         x.append(np.array(x_next))
+        
+#         if val in Time:
+#             xf.append(np.array(x_next))
+            
+#     xf = np.array(xf)
+
+#     return xf.reshape(len(Time),len(matrix)) 
+
+def Matrix(Size,mean,std,n,abundances,t):
+    """
+    
+
+    Parameters
+    ----------
+    Size : int
+        Amount of species.
+    mean : float
+        mean of equilibria.
+    std : float
+        standard deviation of equilibria.
+    n : int
+        amount of off-diagonal non-zero elements in matrix.
+    abundances : 1D-array
+        start abundances.
+    t : 1D-array
+        Time.
+
+    Returns
+    -------
+    RandomizedMatrix : NxN-Matrix
+        Interaction Matrix.
+    means : 1D-array
+        array of mean timeseries values.
+
+    """
+    
+    stable = False
+    Equil=[]
+    for ind,m in enumerate(mean):
+        
+        Equil.append(np.random.lognormal(m,std[ind]))
+    Equil = np.array(Equil)
+        
+    matrix = np.zeros((Size,Size))
+        
+    Diagonal = []
+    
+    for i in Equil:
+                
+        Diagonal.append(np.random.uniform(-2,-0.1))
+          
+    np.fill_diagonal(matrix,Diagonal)
+        
+    zeroind = np.argwhere(matrix==0)
+        
+    Rand_ind = np.random.choice(len(zeroind/2),n,replace=False)
+        
+    Rand_indeces = []
+        
+    for i in Rand_ind:
+            
+        Rand_indeces.append(zeroind[i].tolist())
+        
+    RandomizedMatrix = []
+        
+    for i in matrix:
+            
+        sub = []
+            
+        for j in i:
+                
+            sub.append(j)
+                
+        RandomizedMatrix.append(sub)
+                  
+    for ind in Rand_indeces:
+
+        c = np.random.normal(0.1,.2)
+        RandomizedMatrix[ind[0]][ind[1]] = c
+            
+    return RandomizedMatrix,Equil
+    
+
+
+def timeseries_exp(size,equil_mean,equil_std,n,abundances,t_end,step,plot = False):
+    """
+    
+
+    Parameters
+    ----------
+    Size : int
+        Amount of species.
+    mean : float
+        Mean of equilibria.
+    std : float
+        standard deviation of equilibria.
+    n : int
+        Amount of off-diagonal non-zero elements in matrix.
+    abundances : 1D-array
+        Start abundances.
+    t_end : float
+        End of time array.
+    step : TYPE
+        Step between timepoints.
+    plot : bool, optional
+        Plot timeseries. The default is False.
+
+    Returns
+    -------
+    Series : 2D-array
+        Timeseries.
+    matrix : NxN-Matrix
+        Interaction Matrix.
+
+    """
+    t = np.arange(0,t_end,step)
+    stable = False
+    k=1
+    while not stable:
+        print('stable series attempt '+str(k))
+        matrixgen = Matrix(size,equil_mean,equil_std,n,abundances,t)
+        matrix = matrixgen[0]
+        matrix = np.reshape(matrix,(len(matrix),len(matrix)))
+        Equilibria = matrixgen[1]
+        Series,tps = L_V(abundances,t,matrix,Equilibria)
+        checks = []
+        k+=1
+        for s in Series:
+            
+            if np.isnan(s).any() or max(s)>1000:
+                checks.append(False)
+            else:
+                checks.append(True)
+                
+        if False in checks:
+            stable=False
+        else:
+            stable=True
+            
+    if plot == True:
+        fig = plt.figure(figsize=(17,9))
+        ax = plt.subplot(111)
+    
+        for i,x in enumerate(np.transpose(Series)):
+            
+            ax.plot(t, x, label='S'+str(i) +' equil = '+ str(Equilibria[i]))
+            
+        plt.legend()
+    
+    return np.transpose(Series),tps,matrix
+
+
+
+import pickle
+
+
+for t in range(0,n):
+    start_time = time.monotonic()
+    print(t)
+    timeseries,tp,matrix_gen = timeseries_exp(Nspecies, eq, eq_std, off_diag, s_a, t_end, step)
+    count = []  
+    matrices.append(matrix_gen)
+    TSlist.append(np.transpose(timeseries))
+    tplist.append(np.array(tp))
+    end_time = time.monotonic()
+    print(timedelta(seconds=end_time - start_time))
+    
+
+
+file1 = open("random_matrix.txt",'wb')
+pickle.dump(matrices,file1)
+file2 = open("random_timeseries.txt",'wb')
+pickle.dump(TSlist,file2)
+file3 = open("Random_tp.txt",'wb')
+pickle.dump(tplist,file3)
+file1.close()
+file2.close()
+file3.close()
+
