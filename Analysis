@@ -2262,7 +2262,7 @@ if single:
     single_plot()
 
 
-nameslist_gen = ["GS", "GS_bag", "rDijkstra", "rDijkstra_bag", "Ridge"]
+nameslist_gen = ["GS", "GS_bag", "rDijkstra", "rDijkstra_bag", "Ridge","PINN"]
 
 nameslist_lim = ["GS", "rDijkstra", "GS_bag", "rDijkstra_bag"]
 
